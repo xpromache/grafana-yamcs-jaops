@@ -5,6 +5,8 @@ import {
     DataSourceInstanceSettings,
     LiveChannelScope,
     LoadingState,
+    MetricFindValue,
+    ScopedVars,
     StreamingFrameAction,
 } from '@grafana/data';
 
@@ -12,7 +14,14 @@ import { DataSourceWithBackend, getGrafanaLiveSrv, getTemplateSrv } from '@grafa
 
 import { Observable, merge } from 'rxjs';
 import { tap } from 'rxjs/operators';
-import { Configuration, DEFAULT_QUERY as DefaultQuery, DefaultConfiguration, Query, QueryType } from './types';
+import {
+    Configuration,
+    DEFAULT_QUERY as DefaultQuery,
+    DefaultConfiguration,
+    EndpointInfo,
+    Query,
+    QueryType,
+} from './types';
 
 /**
  * Opt-in counter of data actually delivered to this browser tab over Grafana
@@ -103,6 +112,40 @@ function roundDataPoints(maxDataPoints: number, dataPointsRounding: number, buff
 }
 
 /**
+ * parseEndpointsQuery reads a dashboard variable query: endpoints() or
+ * endpoints(key=value, ...), where key is a label of the endpoint's Yamcs
+ * instance (e.g. mdb), host (the host's ID) or instance. Returns the filters,
+ * or null if the query is not an endpoints() query.
+ */
+export function parseEndpointsQuery(query: string): Record<string, string> | null {
+    const m = /^\s*endpoints\s*\(([^)]*)\)\s*$/.exec(query ?? '');
+    if (!m) {
+        return null;
+    }
+    const filters: Record<string, string> = {};
+    for (const part of m[1].split(',')) {
+        const [k, v] = part.split('=').map((x) => x?.trim());
+        if (k && v !== undefined) {
+            filters[k] = v;
+        }
+    }
+    return filters;
+}
+
+/** matchesEndpoint reports whether an endpoint passes all the filters. */
+export function matchesEndpoint(info: EndpointInfo, filters: Record<string, string>): boolean {
+    return Object.entries(filters).every(([k, v]) => {
+        if (k === 'host') {
+            return info.host === v;
+        }
+        if (k === 'instance') {
+            return info.instance === v;
+        }
+        return info.labels?.[k] === v;
+    });
+}
+
+/**
  * Custom Grafana DataSource for retrieving and streaming data.
  */
 export class DataSource extends DataSourceWithBackend<Query, Configuration> {
@@ -127,6 +170,24 @@ export class DataSource extends DataSourceWithBackend<Query, Configuration> {
      */
     getDefaultQuery(_: CoreApp): Partial<Query> {
         return DefaultQuery;
+    }
+
+    /**
+     * Dashboard variables of type Query: endpoints() lists the endpoint IDs,
+     * configured and discovered; endpoints(mdb=pussim) only those whose
+     * instance has that label. An empty query is endpoints().
+     */
+    async metricFindQuery(query: string, options?: { scopedVars?: ScopedVars }): Promise<MetricFindValue[]> {
+        const resolved = getTemplateSrv().replace(query ?? '', options?.scopedVars);
+        const filters = parseEndpointsQuery(resolved.trim() === '' ? 'endpoints()' : resolved);
+        if (filters === null) {
+            throw new Error('Unknown variable query: use endpoints() or endpoints(label=value, ...)');
+        }
+        const endpoints: Record<string, EndpointInfo> = await this.getResource('list/endpoints');
+        return Object.keys(endpoints)
+            .sort()
+            .filter((id) => matchesEndpoint(endpoints[id], filters))
+            .map((id) => ({ text: id, value: id }));
     }
 
     /**

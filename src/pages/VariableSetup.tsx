@@ -40,6 +40,22 @@ function VariablePanelSetup() {
                                 rover3
                             </Text>{' '}
                             as the actual value.
+                            <br />
+                            <br />
+                            To list endpoints from the datasource instead, set the type to{' '}
+                            <Text color="primary">Query</Text>, pick the Yamcs datasource and enter{' '}
+                            <Text variant="code" color="maxContrast">
+                                endpoints()
+                            </Text>
+                            . It also lists discovered endpoints, and filters on the labels of their Yamcs instance:{' '}
+                            <Text variant="code" color="maxContrast">
+                                endpoints(mdb=pussim)
+                            </Text>{' '}
+                            lists only the endpoints of instances labelled{' '}
+                            <Text variant="code" color="maxContrast">
+                                mdb=pussim
+                            </Text>
+                            .
                         </Card.Description>
                     </Card>
 

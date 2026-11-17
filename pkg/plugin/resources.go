@@ -8,6 +8,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/jaops-space/grafana-yamcs-jaops/pkg/source"
 	"github.com/jaops-space/grafana-yamcs-jaops/pkg/utils/tools"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -35,14 +36,7 @@ func (d *Datasource) handleFetchSources(w http.ResponseWriter, req *http.Request
 	response := make(map[string]any)
 	// A snapshot: discovery adds endpoints while the datasource runs.
 	for endpointID, endpoint := range d.multiplexer.ListEndpoints() {
-		object := map[string]any{
-			"name":        endpoint.Name(),
-			"description": endpoint.Configuration.Description,
-			"instance":    endpoint.Configuration.Instance,
-			"host":        endpoint.Configuration.Host,
-			"labels":      endpoint.Labels(),
-			"discovered":  endpoint.Discovered,
-		}
+		object := endpointObject(endpoint)
 		object["online"] = false
 
 		cli, err := endpoint.GetClient()
@@ -70,6 +64,39 @@ func (d *Datasource) handleFetchSources(w http.ResponseWriter, req *http.Request
 		response[endpointID] = object
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// endpointObject describes an endpoint for the frontend: its name and
+// description, its host and instance, the instance's labels, and whether it
+// was discovered.
+func endpointObject(endpoint *source.YamcsEndpoint) map[string]any {
+	return map[string]any{
+		"name":        endpoint.Name(),
+		"description": endpoint.Configuration.Description,
+		"instance":    endpoint.Configuration.Instance,
+		"host":        endpoint.Configuration.Host,
+		"labels":      endpoint.Labels(),
+		"discovered":  endpoint.Discovered,
+	}
+}
+
+// handleListEndpoints lists the endpoints like /fetch/endpoints, but without
+// checking their health, so it stays fast for dashboard variables. "online"
+// is whether the endpoint's host is connected.
+func (d *Datasource) handleListEndpoints(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+		return
+	}
+	response := make(map[string]any)
+	for endpointID, endpoint := range d.multiplexer.ListEndpoints() {
+		object := endpointObject(endpoint)
+		host := endpoint.GetHost()
+		object["online"] = host != nil && host.IsConnected()
+		response[endpointID] = object
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -166,6 +193,7 @@ func (d *Datasource) handleSearchCommands(w http.ResponseWriter, req *http.Reque
 // registerRoutes takes a *http.ServeMux and registers some HTTP handlers.
 func (d *Datasource) registerRoutes(mux *mux.Router) {
 	mux.HandleFunc("/fetch/endpoints", d.handleFetchSources)
+	mux.HandleFunc("/list/endpoints", d.handleListEndpoints)
 
 	mux.HandleFunc("/fetch/health-details", d.handleGetLastHealthDetails)
 
