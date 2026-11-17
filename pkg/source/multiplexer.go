@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
@@ -249,19 +250,17 @@ func (mux *Multiplexer) finishHostConnect(ctx context.Context, hostID string, ho
 		return
 	}
 
+	// A restarted instance's endpoints are set up again when it runs.
+	cli.SetInstanceRunningHandler(func(instance string) {
+		mux.instanceRunning(host, instance)
+	})
+
 	if err := resolveHostInstances(ctx, host, cli); err != nil {
 		backend.Logger.Warn("Could not list instances after connect", "host", host.Name(), "error", err)
 		return
 	}
 
-	mux.SyncMux.RLock()
-	var hostEndpoints []hostEndpoint
-	for endpointID, endpoint := range mux.Endpoints {
-		if endpoint.GetHost() == host {
-			hostEndpoints = append(hostEndpoints, hostEndpoint{ID: endpointID, Endpoint: endpoint})
-		}
-	}
-	mux.SyncMux.RUnlock()
+	hostEndpoints := mux.hostEndpoints(host, "")
 
 	endpointErrors := map[string]error{}
 	for _, e := range hostEndpoints {
@@ -269,6 +268,45 @@ func (mux *Multiplexer) finishHostConnect(ctx context.Context, hostID string, ho
 	}
 	for endpointID, err := range endpointErrors {
 		backend.Logger.Warn("Could not set up endpoint after host connect", "endpoint", endpointID, "host", host.Name(), "error", err)
+	}
+}
+
+// hostEndpoints returns the host's endpoints; with instance, only that
+// instance's.
+func (mux *Multiplexer) hostEndpoints(host *YamcsHost, instance string) []hostEndpoint {
+	mux.SyncMux.RLock()
+	defer mux.SyncMux.RUnlock()
+	var out []hostEndpoint
+	for endpointID, endpoint := range mux.Endpoints {
+		if endpoint.GetHost() == host && (instance == "" || endpoint.GetInstanceName() == instance) {
+			out = append(out, hostEndpoint{ID: endpointID, Endpoint: endpoint})
+		}
+	}
+	return out
+}
+
+// instanceRunning sets up the endpoints of an instance that runs again after
+// it stopped (its subscriptions ended with it): the host's instances and
+// processors listed again, then each endpoint's subscriptions made again.
+// The streams make their own subscriptions again when Grafana runs them
+// again (see YamcsClient.InstanceChanged).
+func (mux *Multiplexer) instanceRunning(host *YamcsHost, instance string) {
+	cli := host.GetClient()
+	if cli == nil || !cli.IsWebSocketConnected() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := resolveHostInstances(ctx, host, cli); err != nil {
+		backend.Logger.Warn("Could not list instances after an instance restart", "host", host.Name(), "instance", instance, "error", err)
+		return
+	}
+	endpointErrors := map[string]error{}
+	for _, e := range mux.hostEndpoints(host, instance) {
+		mux.connectEndpoint(ctx, e.ID, e.Endpoint, host, cli, true, endpointErrors)
+	}
+	for endpointID, err := range endpointErrors {
+		backend.Logger.Warn("Could not set up endpoint after an instance restart", "endpoint", endpointID, "host", host.Name(), "error", err)
 	}
 }
 
@@ -414,14 +452,21 @@ func (mux *Multiplexer) connectEndpoint(
 		return
 	}
 
-	_, err := cli.CreateProcessorSubscription(ctx, instance, processor, endpointHost.GetProcessorListener(instance, processor))
-	if err != nil {
-		endpointErrors[endpointID] = exception.Wrap(fmt.Sprintf("could not subscribe to updates on processor %s", processorName), "MUX_CONNECT_SUB_FAIL", err)
-		return
+	// Several endpoints may share an instance and processor: one
+	// subscription each.
+	if _, found := cli.FindProcessorSubscription(instance.GetName(), processorName); !found {
+		_, err := cli.CreateProcessorSubscription(ctx, instance, processor, endpointHost.GetProcessorListener(instance, processor))
+		if err != nil {
+			endpointErrors[endpointID] = exception.Wrap(fmt.Sprintf("could not subscribe to updates on processor %s", processorName), "MUX_CONNECT_SUB_FAIL", err)
+			return
+		}
 	}
 
 	// Create a parameter subscription, that will be used to add and remove parameters
-	_, err = cli.CreateParameterSubscription(ctx, instance, processor, endpoint.getChannelParameterListener())
+	if _, found := cli.FindParameterSubscription(instance.GetName(), processorName); found {
+		return
+	}
+	_, err := cli.CreateParameterSubscription(ctx, instance, processor, endpoint.getChannelParameterListener())
 	if err != nil {
 		endpointErrors[endpointID] = exception.Wrap(fmt.Sprintf("could not create parameter subscriptions on %s", processorName), "MUX_CONNECT_SUB_FAIL", err)
 		return

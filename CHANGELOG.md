@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog], and this project follows [Semantic Ve
 
 ## [Unreleased]
 
+### Fixed
+
+- Panels of a Yamcs instance that was restarted (stopped and started, e.g. after a configuration change) stopped updating until Grafana was restarted: the instance's subscriptions ended with it, but the WebSocket stayed connected, so the plugin kept using them. The plugin now follows the instances' states (the Yamcs topic `instances`): when an instance stops or starts again, its subscriptions are dropped and its streams end, so Grafana runs them again and they subscribe afresh, and its endpoints' processor subscriptions are made again once it runs.
+
 ## [1.1.11] - 2026-11-14
 
 ### Fixed

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,6 +109,11 @@ type YamcsClient struct {
 	// connection is reacted to immediately instead of up to a polling
 	// interval later.
 	disconnectSignal chan struct{}
+
+	// The instances' states, to notice a restarted instance
+	// (instance_subscription.go); made on first use.
+	instancesOnce sync.Once
+	instances     *instanceTracker
 }
 
 // NewYamcsClient constructs a new YamcsClient.
@@ -176,6 +182,7 @@ func NewYamcsClientWithContext(
 	client.WebSocket.SetListener(ws.TimeListenerID, client.HandleTimeMessage)
 	client.WebSocket.SetListener(ws.LinksListenerID, client.HandleLinkMessage)
 	client.WebSocket.SetListener(ws.ProcessorListenerID, client.HandleProcessorMessage)
+	client.WebSocket.SetListener(ws.InstancesListenerID, client.HandleInstanceMessage)
 
 	// Handle WebSocket disconnections
 	client.WebSocket.SetDisconnectHandler(func() {
@@ -195,6 +202,7 @@ func (client *YamcsClient) EstablishWebSocketConnection(ctx context.Context) err
 		client.clearAllSubscriptions()
 		client.resetDisconnectSignal()
 		go client.WebSocket.Listen()
+		client.subscribeInstances(ctx)
 	}
 	return err
 }
@@ -362,6 +370,15 @@ const subscribeFailureCooldown = 5 * time.Second
 // matching FindXSubscription's own lookup granularity.
 func subscribeCooldownKey(kind, instance, processor string) string {
 	return kind + "|" + instance + "|" + processor
+}
+
+// cooldownInstance is the instance of a subscribeCooldownKey.
+func cooldownInstance(key string) string {
+	parts := strings.SplitN(key, "|", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[1]
 }
 
 // checkSubscribeCooldown fails fast, without touching the network, if an

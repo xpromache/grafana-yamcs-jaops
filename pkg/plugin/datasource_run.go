@@ -65,7 +65,8 @@ func scaleTickerIntervalByReplay(endpoint *source.YamcsEndpoint, baseInterval ti
 // that still needs it, e.g. RunSubscriptionStream) along with a context
 // derived from ctx that is also cancelled - with cause
 // backend.DownstreamErrorf("yamcs client disconnected") - the instant the
-// connection is lost, so callers can rely solely on
+// connection is lost, or the endpoint's instance stops or restarts (its
+// subscriptions end with it), so callers can rely solely on
 // `case <-ctx.Done(): return context.Cause(ctx)` in their select loop for
 // both panel-close and connection-loss, with no extra channel or re-check
 // needed. The returned cancel func must be deferred by the caller to stop the
@@ -83,11 +84,17 @@ func beginStreamGuard(ctx context.Context, endpoint *source.YamcsEndpoint) (cont
 	}
 
 	streamCtx, cancel := context.WithCancelCause(ctx)
+	// Taken before returning, so a change from now on is not missed.
+	instanceChanged := yamcs.InstanceChanged(endpoint.GetInstanceName())
 	go func() {
 		select {
 		case <-streamCtx.Done():
 		case <-yamcs.Disconnected():
 			cancel(backend.DownstreamErrorf("yamcs client disconnected"))
+		case <-instanceChanged:
+			// Its subscriptions ended with it: Grafana runs the stream
+			// again, which subscribes afresh.
+			cancel(backend.DownstreamErrorf("yamcs instance %s stopped or restarted", endpoint.GetInstanceName()))
 		}
 	}()
 	return streamCtx, yamcs, func() { cancel(nil) }, nil
