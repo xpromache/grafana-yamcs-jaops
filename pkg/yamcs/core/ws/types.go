@@ -11,4 +11,5 @@ const (
 	TimeListenerID           ListenerID = "time"
 	LinksListenerID          ListenerID = "links"
 	ProcessorListenerID      ListenerID = "processors"
+	InstancesListenerID      ListenerID = "instances"
 )
