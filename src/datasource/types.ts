@@ -74,6 +74,10 @@ export interface Configuration extends DataSourceJsonData {
             tlsInsecure?: boolean;
             authEnabled: boolean;
             username?: string;
+            /** Make an endpoint per instance of the host, named after it (or its alias). */
+            discoverInstances?: boolean;
+            /** Instance name to endpoint ID, for discovered endpoints. */
+            aliases?: Record<string, string>;
         }
     >;
 
@@ -91,9 +95,23 @@ export interface Configuration extends DataSourceJsonData {
         }
     >;
 
+    /** Who may act on Yamcs (commands, alarm and link actions) and as whom. */
+    actions?: ActionsConfiguration;
+
     bufferMaxLength: number;
     dataPointsRounding: number;
     debugMode: boolean;
+}
+
+export interface ActionsConfiguration {
+    /** Refuse every action: a display-only datasource. */
+    disabled?: boolean;
+    /** Lowest Grafana role allowed to act: Viewer, Editor or Admin; empty: any. */
+    minRole?: string;
+    /** Act with the Grafana user's ID token (needs Forward OAuth Identity) instead of the host's credentials. */
+    asUser?: boolean;
+    /** Header carrying the ID token to Yamcs; default X-Id-Token. */
+    userTokenHeader?: string;
 }
 
 export interface SecureConfiguration {
@@ -138,6 +156,10 @@ export interface EndpointInfo {
     online: boolean;
     name: string;
     description: string;
+    instance?: string;
+    host?: string;
+    labels?: Record<string, string>;
+    discovered?: boolean;
 }
 
 export type ValueOf<T> = {

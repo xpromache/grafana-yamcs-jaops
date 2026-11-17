@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog], and this project follows [Semantic Ve
 
 ## [Unreleased]
 
+### Added
+
+- **Instance discovery.** A host with `discoverInstances` gets an endpoint per running instance, its ID the instance's name (or an alias from the host's `aliases`, e.g. `fm1: sat-1`), on the default (realtime) processor. The host's instances are listed again every 30 s while connected: new instances get endpoints, and an instance that moves to another discovering host of the datasource takes its endpoint along. Endpoints configured by hand win over discovered ones with the same ID. A datasource can list only its servers.
+- **Endpoint variables.** A dashboard variable query `endpoints()` lists the endpoints, `endpoints(mdb=pussim)` those whose instance has the label (also `host=`, `instance=`); the new resource `list/endpoints` lists them with their instance, host and labels without testing the connections.
+- **Multi-value endpoint variables.** A query on a variable with several values gives one stream per endpoint, its value fields named `<endpoint> · <parameter>` and labelled `satellite=<endpoint>`.
+- **Autocompletion with a variable endpoint**: the parameter and command pickers use the variable's first value.
+- **Actions settings** (`actions` in the datasource's JSON): `disabled` refuses commands, alarm and link actions; `minRole` (`Viewer`, `Editor`, `Admin`) is the lowest Grafana role allowed to act; `asUser` sends actions with the Grafana user's ID token (Grafana's Forward OAuth Identity) in `userTokenHeader` (default `X-Id-Token`) instead of the host's credentials, and refuses them without one. Actions are logged with the user.
+
+### Changed
+
+- New endpoints in the configuration editor take their instance's name as ID (`sat-1`) instead of `new-endpoint-N`, so dashboards naming them work in another Grafana with the same instances.
+- A host's instance list is replaced at each listing, so removed instances no longer linger.
+
 ## [1.1.11] - 2026-11-14
 
 ### Fixed

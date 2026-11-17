@@ -1,5 +1,7 @@
 import { Combobox, ComboboxOption, InlineField, Stack } from '@grafana/ui';
+import { getTemplateSrv } from '@grafana/runtime';
 import React, { useEffect, useRef, useState } from 'react';
+import { splitEndpoints } from '../datasource';
 import { QueryProps } from './constants';
 
 type CommandInfo = {
@@ -8,7 +10,9 @@ type CommandInfo = {
 };
 
 export function CommandQuery({ query, onChange, datasource }: QueryProps) {
-    const { endpoint } = query;
+    const endpoint = query.asVariable
+        ? splitEndpoints(getTemplateSrv().replace(query.endpointVariable ?? '', undefined, 'csv'))[0]
+        : query.endpoint;
 
     const [command, setCommand] = useState(query.command);
     const [comboboxKey, setComboboxKey] = useState(0);

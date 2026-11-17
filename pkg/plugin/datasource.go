@@ -35,6 +35,11 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 			)
 		}
 	}
+	if !validRole(cfg.Actions.MinRole) {
+		return nil, exception.New(fmt.Sprintf("actions.minRole %q: want Viewer, Editor or Admin", cfg.Actions.MinRole), "ACTIONS_CONFIGURATION_INVALID")
+	}
+	datasource.actions = actionsOf(cfg)
+
 	opts, err := settings.HTTPClientOptions(ctx)
 	if err != nil {
 		return nil, exception.Wrap("Error loading datasource HTTP options", "HTTP_OPTIONS_ERROR", err)

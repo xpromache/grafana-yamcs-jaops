@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"github.com/jaops-space/grafana-yamcs-jaops/pkg/config"
 	"sync"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -25,6 +26,7 @@ type Datasource struct {
 	backend.StreamHandler
 	instancemgmt.InstanceDisposer
 	multiplexer       *source.Multiplexer
+	actions           config.ActionsConfiguration
 	httpClientOptions *httpclient.Options
 
 	lastHealthDetails *HealthDetails

@@ -161,6 +161,11 @@ func (m *HTTPManager) SendRequestWithQuery(ctx context.Context, method string, u
 }
 
 func (m *HTTPManager) sendRequest(ctx context.Context, method string, url string, body []byte, query map[string]string, opts requestOptions) ([]byte, error) {
+	identity := IdentityFrom(ctx)
+	if identity != nil {
+		// A call for a user: their headers replace the host's credentials.
+		opts.applyCredentials = false
+	}
 	if opts.applyCredentials && m.Credentials != nil && m.Credentials.IsExpired() {
 		if err := m.Credentials.Refresh(ctx, m); err != nil {
 			return nil, err
@@ -180,6 +185,9 @@ func (m *HTTPManager) sendRequest(ctx context.Context, method string, url string
 		req.Header.Set(k, v)
 	}
 	for k, v := range opts.headers {
+		req.Header.Set(k, v)
+	}
+	for k, v := range identity {
 		req.Header.Set(k, v)
 	}
 

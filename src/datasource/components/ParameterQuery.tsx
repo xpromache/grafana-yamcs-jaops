@@ -1,6 +1,8 @@
 import { SelectableValue } from '@grafana/data';
 import { Combobox, ComboboxOption, InlineField, MultiCombobox, RadioButtonGroup, Stack, Text } from '@grafana/ui';
+import { getTemplateSrv } from '@grafana/runtime';
 import React, { useCallback } from 'react';
+import { splitEndpoints } from '../datasource';
 import { Query, QueryField, QueryType } from '../types';
 import { FieldsOptions, QueryEditorModelProps, QueryOptions } from './constants';
 
@@ -10,7 +12,10 @@ const ColorOptions: Array<SelectableValue<boolean>> = [
 ];
 
 export function ParameterQuery({ query, onChange, datasource }: QueryEditorModelProps) {
-    const { endpoint } = query;
+    // With a variable endpoint ($sat), the MDB of its first current value.
+    const endpoint = query.asVariable
+        ? splitEndpoints(getTemplateSrv().replace(query.endpointVariable ?? '', undefined, 'csv'))[0]
+        : query.endpoint;
 
     const queryTypeInfo = QueryOptions.find((o) => o.value === query.type);
     const additionalFields = queryTypeInfo?.additionalFields;

@@ -3,6 +3,9 @@ import {
     DataQueryRequest,
     DataQueryResponse,
     DataSourceInstanceSettings,
+    FieldType,
+    MetricFindValue,
+    ScopedVars,
     LiveChannelScope,
     LoadingState,
     StreamingFrameAction,
@@ -11,8 +14,15 @@ import {
 import { DataSourceWithBackend, getGrafanaLiveSrv, getTemplateSrv } from '@grafana/runtime';
 
 import { Observable, merge } from 'rxjs';
-import { tap } from 'rxjs/operators';
-import { Configuration, DEFAULT_QUERY as DefaultQuery, DefaultConfiguration, Query, QueryType } from './types';
+import { map, tap } from 'rxjs/operators';
+import {
+    Configuration,
+    DEFAULT_QUERY as DefaultQuery,
+    DefaultConfiguration,
+    EndpointInfo,
+    Query,
+    QueryType,
+} from './types';
 
 /**
  * Opt-in counter of data actually delivered to this browser tab over Grafana
@@ -102,6 +112,72 @@ function roundDataPoints(maxDataPoints: number, dataPointsRounding: number, buff
     return Math.min(Math.max(rounded, dataPointsRounding), bufferMaxLength);
 }
 
+/** splitEndpoints splits a variable's value (csv format) into endpoint IDs. */
+export function splitEndpoints(value: string): string[] {
+    const trimmed = (value ?? '').trim().replace(/^\{(.*)\}$/, '$1');
+    return trimmed
+        .split(',')
+        .map((v) => v.trim())
+        .filter((v) => v !== '');
+}
+
+function isValueQuery(type?: QueryType): boolean {
+    return type === QueryType.PLOT || type === QueryType.SINGLE || type === QueryType.DISCRETE;
+}
+
+/**
+ * nameByEndpoint names the value fields of a response after their endpoint
+ * ("sat-1 · soc") and labels them satellite=<endpoint>, so one plot of a
+ * multi-value $sat tells the satellites apart.
+ */
+export function nameByEndpoint(response: DataQueryResponse, endpoint: string): DataQueryResponse {
+    for (const frame of response.data ?? []) {
+        for (const field of frame.fields ?? []) {
+            if (field.type === FieldType.time) {
+                continue;
+            }
+            const short = String(field.name ?? '')
+                .split('/')
+                .pop();
+            field.labels = { ...field.labels, satellite: endpoint };
+            field.config = { ...field.config, displayNameFromDS: `${endpoint} · ${short}` };
+        }
+    }
+    return response;
+}
+
+/**
+ * parseEndpointsQuery reads a variable query: endpoints() or
+ * endpoints(key=value, ...), key a label of the instance (mdb, config, ...)
+ * or host or instance. Null if the query is not one.
+ */
+export function parseEndpointsQuery(query: string): Record<string, string> | null {
+    const m = /^\s*endpoints\s*\(([^)]*)\)\s*$/.exec(query ?? '');
+    if (!m) {
+        return null;
+    }
+    const filters: Record<string, string> = {};
+    for (const part of m[1].split(',')) {
+        const [k, v] = part.split('=').map((x) => x?.trim());
+        if (k && v !== undefined) {
+            filters[k] = v;
+        }
+    }
+    return filters;
+}
+
+export function matchesEndpoint(info: EndpointInfo, filters: Record<string, string>): boolean {
+    return Object.entries(filters).every(([k, v]) => {
+        if (k === 'host') {
+            return info.host === v;
+        }
+        if (k === 'instance') {
+            return info.instance === v;
+        }
+        return info.labels?.[k] === v;
+    });
+}
+
 /**
  * Custom Grafana DataSource for retrieving and streaming data.
  */
@@ -127,6 +203,23 @@ export class DataSource extends DataSourceWithBackend<Query, Configuration> {
      */
     getDefaultQuery(_: CoreApp): Partial<Query> {
         return DefaultQuery;
+    }
+
+    /**
+     * Dashboard variables: endpoints() lists the endpoints (configured and
+     * discovered), endpoints(mdb=pussim) those whose instance has the label.
+     */
+    async metricFindQuery(query: string, options?: { scopedVars?: ScopedVars }): Promise<MetricFindValue[]> {
+        const resolved = getTemplateSrv().replace(query ?? '', options?.scopedVars);
+        const filters = parseEndpointsQuery(resolved.trim() === '' ? 'endpoints()' : resolved);
+        if (filters === null) {
+            throw new Error('Unknown variable query: use endpoints() or endpoints(label=value, ...)');
+        }
+        const endpoints: Record<string, EndpointInfo> = await this.getResource('list/endpoints');
+        return Object.keys(endpoints)
+            .sort()
+            .filter((id) => matchesEndpoint(endpoints[id], filters))
+            .map((id) => ({ text: id, value: id }));
     }
 
     /**
@@ -183,12 +276,14 @@ export class DataSource extends DataSourceWithBackend<Query, Configuration> {
                 const templateSrv = getTemplateSrv();
 
                 pathName = templateSrv.replace(pathName, request.scopedVars);
-                query.parameter = templateSrv.replace(query.parameter, request.scopedVars);
-                query.command = templateSrv.replace(query.command, request.scopedVars);
+                const parameter = templateSrv.replace(query.parameter, request.scopedVars);
+                const command = templateSrv.replace(query.command, request.scopedVars);
 
-                if (query.asVariable) {
-                    query.endpoint = templateSrv.replace(query.endpointVariable, request.scopedVars);
-                }
+                // A variable endpoint may have several values ($sat with sat-1 and
+                // sat-2 selected): one stream per endpoint, each named after it.
+                const endpoints = query.asVariable
+                    ? splitEndpoints(templateSrv.replace(query.endpointVariable, request.scopedVars, 'csv'))
+                    : [query.endpoint as string];
 
                 const fromUnix = request.range.from.unix();
                 const toUnix = request.range.to.unix();
@@ -198,43 +293,55 @@ export class DataSource extends DataSourceWithBackend<Query, Configuration> {
                     this.bufferMaxLength
                 );
 
-                const pathParts = [query.endpoint, pathName];
-                if (query.type === QueryType.PLOT) {
-                    pathParts.push(
-                        formatRangePath(request),
-                        `${roundedMaxDataPoints}`,
-                        formatGraphFieldsPath(query)
-                    );
-                } else if (query.type === QueryType.DISCRETE) {
-                    pathParts.push(
-                        formatRangePath(request),
-                        `${roundedMaxDataPoints}`,
-                        formatDiscreteOptionsPath(query)
-                    );
-                } else if (query.type === QueryType.COMMAND_HISTORY || query.type === QueryType.SINGLE) {
-                    pathParts.push(formatRangePath(request));
-                }
+                return merge(
+                    ...endpoints.map((endpoint) => {
+                        const pathParts = [endpoint, pathName];
+                        if (query.type === QueryType.PLOT) {
+                            pathParts.push(
+                                formatRangePath(request),
+                                `${roundedMaxDataPoints}`,
+                                formatGraphFieldsPath(query)
+                            );
+                        } else if (query.type === QueryType.DISCRETE) {
+                            pathParts.push(
+                                formatRangePath(request),
+                                `${roundedMaxDataPoints}`,
+                                formatDiscreteOptionsPath(query)
+                            );
+                        } else if (query.type === QueryType.COMMAND_HISTORY || query.type === QueryType.SINGLE) {
+                            pathParts.push(formatRangePath(request));
+                        }
 
-                return getGrafanaLiveSrv()
-                    .getDataStream({
-                        buffer: {
-                            maxLength: this.bufferMaxLength,
-                            action,
-                        },
-                        addr: {
-                            scope: LiveChannelScope.DataSource,
-                            namespace: this.uid,
-                            stream: this.uid,
-                            path: pathParts.join('/'),
-                            data: {
-                                ...query,
-                                from: fromUnix,
-                                to: toUnix,
-                                points: roundedMaxDataPoints,
-                            },
-                        },
+                        let stream = getGrafanaLiveSrv()
+                            .getDataStream({
+                                key: `${query.refId}-${endpoint}`,
+                                buffer: {
+                                    maxLength: this.bufferMaxLength,
+                                    action,
+                                },
+                                addr: {
+                                    scope: LiveChannelScope.DataSource,
+                                    namespace: this.uid,
+                                    stream: this.uid,
+                                    path: pathParts.join('/'),
+                                    data: {
+                                        ...query,
+                                        endpoint,
+                                        parameter,
+                                        command,
+                                        from: fromUnix,
+                                        to: toUnix,
+                                        points: roundedMaxDataPoints,
+                                    },
+                                },
+                            })
+                            .pipe(tap(createBenchmarkFrontendTap()));
+                        if (query.asVariable && isValueQuery(query.type)) {
+                            stream = stream.pipe(map((response) => nameByEndpoint(response, endpoint)));
+                        }
+                        return stream;
                     })
-                    .pipe(tap(createBenchmarkFrontendTap()));
+                );
             })
             .filter(Boolean) as Array<Observable<DataQueryResponse>>; // Remove undefined values
 

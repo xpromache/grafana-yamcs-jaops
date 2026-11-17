@@ -8,6 +8,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/jaops-space/grafana-yamcs-jaops/pkg/source"
 	"github.com/jaops-space/grafana-yamcs-jaops/pkg/utils/tools"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -33,10 +34,8 @@ func (d *Datasource) handleFetchSources(w http.ResponseWriter, req *http.Request
 	}
 
 	response := make(map[string]any)
-	for endpointID, endpoint := range d.multiplexer.Endpoints {
-		object := map[string]any{}
-		object["name"] = endpoint.Name()
-		object["description"] = endpoint.Configuration.Description
+	for endpointID, endpoint := range d.multiplexer.ListEndpoints() {
+		object := endpointObject(endpoint)
 		object["online"] = false
 
 		cli, err := endpoint.GetClient()
@@ -64,6 +63,39 @@ func (d *Datasource) handleFetchSources(w http.ResponseWriter, req *http.Request
 		response[endpointID] = object
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// endpointObject describes an endpoint for the frontend: name, instance,
+// host, the instance's labels, whether it was discovered.
+func endpointObject(endpoint *source.YamcsEndpoint) map[string]any {
+	object := map[string]any{
+		"name":        endpoint.Name(),
+		"description": endpoint.Configuration.Description,
+		"instance":    endpoint.Configuration.Instance,
+		"host":        endpoint.Configuration.Host,
+		"labels":      endpoint.Labels(),
+		"discovered":  endpoint.Discovered,
+	}
+	return object
+}
+
+// handleListEndpoints lists the endpoints without testing them (unlike
+// /fetch/endpoints): for dashboard variables. Online is whether the
+// endpoint's host is connected.
+func (d *Datasource) handleListEndpoints(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+		return
+	}
+	response := make(map[string]any)
+	for endpointID, endpoint := range d.multiplexer.ListEndpoints() {
+		object := endpointObject(endpoint)
+		host := endpoint.GetHost()
+		object["online"] = host != nil && host.IsConnected()
+		response[endpointID] = object
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -160,6 +192,7 @@ func (d *Datasource) handleSearchCommands(w http.ResponseWriter, req *http.Reque
 // registerRoutes takes a *http.ServeMux and registers some HTTP handlers.
 func (d *Datasource) registerRoutes(mux *mux.Router) {
 	mux.HandleFunc("/fetch/endpoints", d.handleFetchSources)
+	mux.HandleFunc("/list/endpoints", d.handleListEndpoints)
 
 	mux.HandleFunc("/fetch/health-details", d.handleGetLastHealthDetails)
 
@@ -169,19 +202,19 @@ func (d *Datasource) registerRoutes(mux *mux.Router) {
 	mux.HandleFunc("/endpoint/{endpointID}/parameters", d.handleSearchParameters)
 	mux.HandleFunc("/endpoint/{endpointID}/commands", d.handleSearchCommands)
 	mux.HandleFunc("/endpoint/{endpointID}/command/info", d.handleGetCommandInfo)
-	mux.HandleFunc("/endpoint/{endpointID}/command/issue", d.handleExecuteCommand)
-	mux.HandleFunc("/endpoint/{endpointID}/alarm/acknowledge", d.handleAcknowledgeAlarm)
-	mux.HandleFunc("/endpoint/{endpointID}/alarm/clear", d.handleClearAlarm)
-	mux.HandleFunc("/endpoint/{endpointID}/alarm/shelve", d.handleShelveAlarm)
-	mux.HandleFunc("/endpoint/{endpointID}/alarm/unshelve", d.handleUnshelveAlarm)
+	mux.HandleFunc("/endpoint/{endpointID}/command/issue", d.action(d.handleExecuteCommand))
+	mux.HandleFunc("/endpoint/{endpointID}/alarm/acknowledge", d.action(d.handleAcknowledgeAlarm))
+	mux.HandleFunc("/endpoint/{endpointID}/alarm/clear", d.action(d.handleClearAlarm))
+	mux.HandleFunc("/endpoint/{endpointID}/alarm/shelve", d.action(d.handleShelveAlarm))
+	mux.HandleFunc("/endpoint/{endpointID}/alarm/unshelve", d.action(d.handleUnshelveAlarm))
 
 	// Link management routes
 	mux.HandleFunc("/endpoint/{endpointID}/links", d.handleListLinks)
 	mux.HandleFunc("/endpoint/{endpointID}/links/{linkName}", d.handleGetLink)
-	mux.HandleFunc("/endpoint/{endpointID}/links/{linkName}/enable", d.handleEnableLink)
-	mux.HandleFunc("/endpoint/{endpointID}/links/{linkName}/disable", d.handleDisableLink)
-	mux.HandleFunc("/endpoint/{endpointID}/links/{linkName}/reset", d.handleResetLinkCounters)
-	mux.HandleFunc("/endpoint/{endpointID}/links/{linkName}/action/{actionID}", d.handleRunLinkAction)
+	mux.HandleFunc("/endpoint/{endpointID}/links/{linkName}/enable", d.action(d.handleEnableLink))
+	mux.HandleFunc("/endpoint/{endpointID}/links/{linkName}/disable", d.action(d.handleDisableLink))
+	mux.HandleFunc("/endpoint/{endpointID}/links/{linkName}/reset", d.action(d.handleResetLinkCounters))
+	mux.HandleFunc("/endpoint/{endpointID}/links/{linkName}/action/{actionID}", d.action(d.handleRunLinkAction))
 }
 
 // endpoint to get latest health details and whether they are available (non-nil)

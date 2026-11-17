@@ -1,7 +1,19 @@
 import { css } from '@emotion/css';
 import { AppEvents, DataSourcePluginOptionsEditorProps, GrafanaTheme2 } from '@grafana/data';
 import { getAppEvents } from '@grafana/runtime';
-import { Button, Checkbox, Field, FileDropzone, InlineField, Input, Modal, Stack, Text, useStyles2 } from '@grafana/ui';
+import {
+    Button,
+    Checkbox,
+    Field,
+    FileDropzone,
+    InlineField,
+    Input,
+    Modal,
+    Select,
+    Stack,
+    Text,
+    useStyles2,
+} from '@grafana/ui';
 import React, { useEffect, useRef, useState } from 'react';
 import {
     Configuration,
@@ -26,6 +38,21 @@ function randomBytesBitwise(size: number) {
     }
     return toHexString(bytes);
 }
+
+/** endpointSlug makes an endpoint ID of an instance name. */
+export function endpointSlug(instance: string): string {
+    return instance
+        .trim()
+        .replace(/[^A-Za-z0-9_.-]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+}
+
+const RoleOptions = [
+    { label: 'Any role', value: '' },
+    { label: 'Viewer', value: 'Viewer' },
+    { label: 'Editor', value: 'Editor' },
+    { label: 'Admin', value: 'Admin' },
+];
 
 interface ConfigProps extends DataSourcePluginOptionsEditorProps<Configuration, SecureConfiguration> {}
 
@@ -200,9 +227,22 @@ export default function ConfigEditor({ options, onOptionsChange }: ConfigProps) 
     };
 
     const updateEndpoint = (index: number, key: keyof IndexedEndpoint, value: any) => {
-        const newEndpoints = endpoints.map((endpoint, endpointIndex) =>
-            endpointIndex === index ? { ...endpoint, [key]: value } : endpoint
-        );
+        const usedIndices = new Set(endpoints.map((endpoint) => endpoint.index));
+        const newEndpoints = endpoints.map((endpoint, endpointIndex) => {
+            if (endpointIndex !== index) {
+                return endpoint;
+            }
+            const next = { ...endpoint, [key]: value };
+            // A new endpoint takes its instance's name as ID (sat-1), so dashboards
+            // naming it work in any Grafana whose datasource has the same instances.
+            if (key === 'instance' && endpoint.index.startsWith('new-endpoint-')) {
+                const slug = endpointSlug(String(value));
+                if (slug && !usedIndices.has(slug)) {
+                    next.index = slug;
+                }
+            }
+            return next;
+        });
 
         updateConfigIndexEndpoints(newEndpoints);
         setEndpoints(newEndpoints);
@@ -403,6 +443,47 @@ export default function ConfigEditor({ options, onOptionsChange }: ConfigProps) 
                                     placeholder="500"
                                     width={18}
                                     onChange={(e) => updateDataPointsRounding(e.currentTarget.value)}
+                                />
+                            </InlineField>
+
+                            <InlineField
+                                label="Actions disabled"
+                                tooltip="Refuse commands, alarm and link actions: a display-only datasource."
+                            >
+                                <Checkbox
+                                    value={Boolean(config.actions?.disabled)}
+                                    onChange={(e) =>
+                                        updateConfig('actions', {
+                                            ...config.actions,
+                                            disabled: e.currentTarget.checked,
+                                        })
+                                    }
+                                />
+                            </InlineField>
+
+                            <InlineField
+                                label="Actions: minimum role"
+                                tooltip="The lowest Grafana role that may send commands and act on alarms and links."
+                            >
+                                <Select
+                                    width={18}
+                                    options={RoleOptions}
+                                    value={config.actions?.minRole ?? ''}
+                                    onChange={(v) =>
+                                        updateConfig('actions', { ...config.actions, minRole: v.value ?? '' })
+                                    }
+                                />
+                            </InlineField>
+
+                            <InlineField
+                                label="Actions as the user"
+                                tooltip="Send actions with the Grafana user's ID token (enable Forward OAuth Identity, log in with OAuth) instead of the host's credentials, so Yamcs checks and records the user. Yamcs needs an AuthModule accepting the token."
+                            >
+                                <Checkbox
+                                    value={Boolean(config.actions?.asUser)}
+                                    onChange={(e) =>
+                                        updateConfig('actions', { ...config.actions, asUser: e.currentTarget.checked })
+                                    }
                                 />
                             </InlineField>
 
